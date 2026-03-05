@@ -16,16 +16,32 @@ class _FoldersScreenState extends State<FoldersScreen> {
   final CardRepository cardRepo = CardRepository();
 
   late Future<List<Folder>> _foldersFuture;
+  Map<int, int> _cardCounts = {};
 
   @override
   void initState() {
     super.initState();
-    _foldersFuture = folderRepo.getFolders();
+    _loadFoldersWithCounts();
 
-    // Trigger seeding after first frame so dialog works reliably
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensureSeeded();
     });
+  }
+
+  Future<void> _loadFoldersWithCounts() async {
+    final folders = await folderRepo.getFolders();
+    final counts = <int, int>{};
+    for (var f in folders) {
+      counts[f.id!] = await folderRepo.getCardCountForFolder(f.id!);
+    }
+    setState(() {
+      _foldersFuture = Future.value(folders);
+      _cardCounts = counts;
+    });
+  }
+
+  void _refresh() {
+    _loadFoldersWithCounts();
   }
 
   Future<void> _ensureSeeded() async {
@@ -37,12 +53,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
     await cardRepo.seedSuitsAndCards(suitCount);
     _refresh();
-  }
-
-  void _refresh() {
-    setState(() {
-      _foldersFuture = folderRepo.getFolders();
-    });
   }
 
   Future<int?> _pickSuitCount() async {
@@ -61,13 +71,56 @@ class _FoldersScreenState extends State<FoldersScreen> {
     );
   }
 
+  Future<void> _deleteFolder(Folder folder) async {
+    final count = _cardCounts[folder.id] ?? 0;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Folder?'),
+        content: Text(
+          'Are you sure you want to delete "${folder.folderName}"?\n\n'
+          'This will also delete all $count cards in this folder.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await folderRepo.deleteFolder(folder.id!);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Folder "${folder.folderName}" deleted')),
+      );
+      _refresh();
+    }
+  }
+
   IconData _iconForSuit(String suit) {
     return switch (suit) {
       'Hearts' => Icons.favorite,
-      'Spades' => Icons.change_history,
-      'Diamonds' => Icons.diamond,
+      'Diamonds' => Icons.change_history,
       'Clubs' => Icons.local_florist,
+      'Spades' => Icons.eco, // Fixed: was Icons.change_history
       _ => Icons.folder,
+    };
+  }
+
+  Color _colorForSuit(String suit) {
+    return switch (suit) {
+      'Hearts' || 'Diamonds' => Colors.red,
+      'Clubs' || 'Spades' => Colors.black,
+      _ => Colors.grey,
     };
   }
 
@@ -96,7 +149,6 @@ class _FoldersScreenState extends State<FoldersScreen> {
 
           final folders = snap.data ?? [];
 
-          // IMPORTANT: show something if empty
           if (folders.isEmpty) {
             return Center(
               child: Column(
@@ -117,17 +169,32 @@ class _FoldersScreenState extends State<FoldersScreen> {
             itemCount: folders.length,
             itemBuilder: (ctx, i) {
               final f = folders[i];
-              return ListTile(
-                leading: Icon(_iconForSuit(f.folderName)),
-                title: Text(f.folderName),
-                subtitle: Text('Tap to view cards'),
-                onTap: () async {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => CardsScreen(folder: f)),
-                  );
-                  _refresh();
-                },
+              final cardCount = _cardCounts[f.id] ?? 0;
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: ListTile(
+                  leading: Icon(
+                    _iconForSuit(f.folderName),
+                    color: _colorForSuit(f.folderName),
+                    size: 32,
+                  ),
+                  title: Text(
+                    f.folderName,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text('$cardCount cards'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () => _deleteFolder(f),
+                  ),
+                  onTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => CardsScreen(folder: f)),
+                    );
+                    _refresh();
+                  },
+                ),
               );
             },
           );
